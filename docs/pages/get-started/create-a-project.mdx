@@ -1,24 +1,337 @@
----
-title: Create a project
-description: Learn how to create a new Expo project.
-hideTOC: true
----
+// App.js
 
-import { Terminal } from '~/ui/components/Snippet';
+import React, { useState, useEffect, useRef } from "react";
+import {
+  View,
+  Text,
+  TextInput,
+  Button,
+  FlatList,
+  TouchableOpacity,
+  ActivityIndicator,
+  StyleSheet,
+  Alert,
+} from "react-native";
 
-System requirements:
+import auth from "@react-native-firebase/auth";
+import firestore from "@react-native-firebase/firestore";
+import Geolocation from "@react-native-community/geolocation";
 
-- [Node.js (LTS)](https://nodejs.org/en/).
-- macOS, Windows (Powershell and [WSL 2](https://expo.fyi/wsl)), and Linux are supported.
+export default function App() {
+  const [initializing, setInitializing] = useState(true);
+  const [user, setUser] = useState(null);
 
-We recommend starting with the default project created by `create-expo-app`. The default project includes example code to help you get started.
+  // Phone auth states
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [confirmResult, setConfirmResult] = useState(null);
+  const [otpCode, setOtpCode] = useState("");
+  const [loading, setLoading] = useState(false);
 
-To create a new project, run the following command:
+  // Product and cart states
+  const [products, setProducts] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [cart, setCart] = useState([]);
 
-<Terminal cmd={['$ npx create-expo-app@latest']} />
+  // User location
+  const [userLocation, setUserLocation] = useState(null);
 
-> You can choose a different template by adding the [`--template` option](/more/create-expo/#--template).
+  // Handle auth state changes
+  function onAuthStateChanged(user) {
+    setUser(user);
+    if (initializing) setInitializing(false);
+  }
 
-## Next step
+  useEffect(() => {
+    const subscriber = auth().onAuthStateChanged(onAuthStateChanged);
+    return subscriber;
+  }, []);
 
-You have a project. Now it's time to set up your development environment so that you can start developing.
+  // Get user location once logged in
+  useEffect(() => {
+    if (user) {
+      Geolocation.getCurrentPosition(
+        (position) => {
+          setUserLocation({
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          });
+        },
+        (error) => {
+          Alert.alert("Location Error", error.message);
+          setUserLocation(null);
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+      );
+    } else {
+      setUserLocation(null);
+    }
+  }, [user]);
+
+  // Fetch products
+  useEffect(() => {
+    if (user) {
+      setLoadingProducts(true);
+      const unsubscribe = firestore()
+        .collection("products")
+        .onSnapshot(
+          (querySnapshot) => {
+            const productsList = [];
+            querySnapshot.forEach((doc) => {
+              productsList.push({ id: doc.id, ...doc.data() });
+            });
+            setProducts(productsList);
+            setLoadingProducts(false);
+          },
+          (error) => {
+            Alert.alert("Firestore Error", error.message);
+            setLoadingProducts(false);
+          }
+        );
+      return () => unsubscribe();
+    }
+  }, [user]);
+
+  // Start phone auth (send OTP)
+  async function sendOtp() {
+    if (!phoneNumber) {
+      Alert.alert("Input Error", "Please enter a phone number.");
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await auth().signInWithPhoneNumber(phoneNumber);
+      setConfirmResult(result);
+      Alert.alert("OTP Sent", `An OTP has been sent to ${phoneNumber}`);
+    } catch (error) {
+      Alert.alert("Failed to send OTP", error.message);
+    }
+    setLoading(false);
+  }
+
+  // Confirm OTP code
+  async function confirmOtp() {
+    if (!otpCode) {
+      Alert.alert("Input Error", "Please enter the OTP code.");
+      return;
+    }
+    setLoading(true);
+    try {
+      await confirmResult.confirm(otpCode);
+      Alert.alert("Success", "Phone authentication successful!");
+      setConfirmResult(null);
+      setOtpCode("");
+    } catch (error) {
+      Alert.alert("Invalid OTP", error.message);
+    }
+    setLoading(false);
+  }
+
+  // Logout handler
+  async function handleLogout() {
+    try {
+      await auth().signOut();
+      setCart([]);
+      setConfirmResult(null);
+      setOtpCode("");
+      setPhoneNumber("");
+    } catch (error) {
+      Alert.alert("Logout Failed", error.message);
+    }
+  }
+
+  // Cart management
+  function addToCart(product) {
+    if (cart.find((item) => item.id === product.id)) {
+      Alert.alert("Cart", "Product already in cart.");
+      return;
+    }
+    setCart([...cart, product]);
+  }
+
+  function removeFromCart(productId) {
+    setCart(cart.filter((item) => item.id !== productId));
+  }
+
+  if (initializing) {
+    return (
+      <View style={styles.centered}>
+        <ActivityIndicator size="large" color="#0066cc" />
+      </View>
+    );
+  }
+
+  if (!user) {
+    // Show phone input or OTP input
+    return (
+      <View style={styles.container}>
+        <Text style={styles.title}>Phone Number Login</Text>
+        {!confirmResult ? (
+          <>
+            <TextInput
+              placeholder="Enter phone number (+91xxxxxxxxxx)"
+              style={styles.input}
+              keyboardType="phone-pad"
+              value={phoneNumber}
+              onChangeText={setPhoneNumber}
+            />
+            <Button
+              title={loading ? "Sending OTP..." : "Send OTP"}
+              onPress={sendOtp}
+              disabled={loading}
+            />
+          </>
+        ) : (
+          <>
+            <TextInput
+              placeholder="Enter OTP"
+              style={styles.input}
+              keyboardType="number-pad"
+              value={otpCode}
+              onChangeText={setOtpCode}
+              maxLength={6}
+            />
+            <Button
+              title={loading ? "Verifying OTP..." : "Confirm OTP"}
+              onPress={confirmOtp}
+              disabled={loading}
+            />
+          </>
+        )}
+      </View>
+    );
+  }
+
+  // User logged in UI
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Welcome, {user.phoneNumber}</Text>
+      <Button title="Logout" onPress={handleLogout} color="#cc0000" />
+
+      <View style={{ marginVertical: 12 }} />
+
+      <Text style={styles.subtitle}>Your Location:</Text>
+      {userLocation ? (
+        <Text>
+          Lat: {userLocation.latitude.toFixed(4)}, Lon:{" "}
+          {userLocation.longitude.toFixed(4)}
+        </Text>
+      ) : (
+        <Text>Loading location...</Text>
+      )}
+
+      <View style={{ marginVertical: 12 }} />
+
+      <Text style={styles.subtitle}>Products:</Text>
+
+      {loadingProducts ? (
+        <ActivityIndicator size="large" color="#0066cc" />
+      ) : (
+        <FlatList
+          data={products}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <View style={styles.productBox}>
+              <Text style={styles.productTitle}>{item.name}</Text>
+              <Text>Price: ₹{item.price}</Text>
+              {/* Distance hidden from user */}
+              <TouchableOpacity
+                style={styles.addButton}
+                onPress={() => addToCart(item)}
+              >
+                <Text style={{ color: "white" }}>Add to Cart</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        />
+      )}
+
+      <View style={{ marginVertical: 12 }} />
+
+      <Text style={styles.subtitle}>Cart ({cart.length} items):</Text>
+      {cart.length === 0 && <Text>Your cart is empty.</Text>}
+      <FlatList
+        data={cart}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <View style={styles.cartItem}>
+            <Text>{item.name}</Text>
+            <TouchableOpacity
+              onPress={() => removeFromCart(item.id)}
+              style={styles.removeButton}
+            >
+              <Text style={{ color: "white" }}>Remove</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    padding: 20,
+    paddingTop: 50,
+    backgroundColor: "#f0f8ff",
+  },
+  centered: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  title: {
+    fontSize: 22,
+    marginBottom: 20,
+    fontWeight: "bold",
+    color: "#003366",
+    textAlign: "center",
+  },
+  subtitle: {
+    fontSize: 18,
+    marginBottom: 8,
+    fontWeight: "600",
+    color: "#004080",
+  },
+  input: {
+    height: 45,
+    borderColor: "#004080",
+    borderWidth: 1,
+    marginBottom: 12,
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    backgroundColor: "white",
+  },
+  productBox: {
+    backgroundColor: "#ffffff",
+    borderRadius: 8,
+    padding: 12,
+    marginVertical: 6,
+    elevation: 2,
+  },
+  productTitle: {
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+  addButton: {
+    marginTop: 8,
+    backgroundColor: "#0066cc",
+    padding: 8,
+    borderRadius: 6,
+    alignItems: "center",
+  },
+  cartItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    backgroundColor: "#ddeeff",
+    padding: 10,
+    marginVertical: 4,
+    borderRadius: 6,
+  },
+  removeButton: {
+    backgroundColor: "#cc3300",
+    paddingHorizontal: 12,
+    borderRadius: 4,
+    justifyContent: "center",
+  },
+});
